@@ -1,0 +1,5 @@
+Copy your downloaded PDF files into this `docs/` folder before pushing to GitHub:
+1. atm_cctv_forensic_master_specification.pdf  (Final Master Technical Specification)
+2. rph2026_ps04_action_plan_deck.pdf           (Your 9-slide Action Plan PPT exported as PDF)
+
+All 6 visual architecture & UI diagrams are already pre-loaded inside `docs/diagrams/`.

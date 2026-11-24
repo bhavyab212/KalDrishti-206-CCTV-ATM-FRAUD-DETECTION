@@ -1,0 +1,119 @@
+version: "3.9"
+
+# Strictly On-Premise / Air-Gapped Private LAN Deployment
+# Runs identically on a Local GPU Desk (RTX 4060 Ti / 5060 Ti 16GB)
+# or a Multi-Officer Station / HQ GPU Server (NVIDIA L40S / RTX PRO 6000 Blackwell MIG).
+
+services:
+  nginx:
+    image: nginx:1.27-alpine
+    container_name: atm_forensic_gateway
+    ports:
+      - "80:80"
+      - "443:443"
+    volumes:
+      - ./nginx/nginx.conf:/etc/nginx/nginx.conf:ro
+      - ./prototype:/usr/share/nginx/html/prototype:ro
+      - ./docs/diagrams:/usr/share/nginx/html/docs/diagrams:ro
+    depends_on:
+      - fastapi
+    restart: unless-stopped
+    networks:
+      - internal_lan
+
+  postgres:
+    image: pgvector/pgvector:pg16
+    container_name: atm_forensic_pgvector
+    environment:
+      POSTGRES_DB: atm_forensics
+      POSTGRES_USER: forensic_user
+      POSTGRES_PASSWORD: change_me_local
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+      - ./database/schema.sql:/docker-entrypoint-initdb.d/01_schema.sql:ro
+    ports:
+      - "127.0.0.1:5432:5432"
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U forensic_user -d atm_forensics"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    restart: unless-stopped
+    networks:
+      - internal_lan
+
+  redis:
+    image: redis:7-alpine
+    container_name: atm_forensic_redis
+    command: ["redis-server", "--appendonly", "yes"]
+    restart: unless-stopped
+    networks:
+      - internal_lan
+
+  fastapi:
+    build:
+      context: ./backend
+      dockerfile: Dockerfile
+    container_name: atm_forensic_api
+    env_file:
+      - .env.example
+    volumes:
+      - worm_raw:/data/worm_raw_clips
+      - derived_evidence:/data/derived_evidence
+      - court_bundles:/data/court_bundles
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_started
+    command: ["uvicorn", "main:app", "--host", "0.0.0.0", "--port", "8000"]
+    restart: unless-stopped
+    networks:
+      - internal_lan
+
+  celery_gpu_worker:
+    build:
+      context: ./backend
+      dockerfile: Dockerfile
+    container_name: atm_forensic_gpu_worker
+    env_file:
+      - .env.example
+    volumes:
+      - worm_raw:/data/worm_raw_clips
+      - derived_evidence:/data/derived_evidence
+      - court_bundles:/data/court_bundles
+    depends_on:
+      - redis
+      - postgres
+    command: ["celery", "-A", "worker.celery_app", "worker", "--loglevel=info", "--concurrency=1"]
+    # Uncomment deploy block on NVIDIA CUDA GPU host (RTX 4060 Ti / L40S / RTX PRO 6000)
+    # deploy:
+    #   resources:
+    #     reservations:
+    #       devices:
+    #         - driver: nvidia
+    #           count: 1
+    #           capabilities: [gpu]
+    restart: unless-stopped
+    networks:
+      - internal_lan
+
+  ffmpeg_sandbox:
+    image: jrottenberg/ffmpeg:6.1-alpine
+    container_name: atm_forensic_ffmpeg_sandbox
+    # Zero network access, non-root execution, read-only rootfs for malformed DVR defense
+    network_mode: "none"
+    read_only: true
+    user: "1000:1000"
+    profiles: ["sandbox"]
+    entrypoint: ["ffmpeg"]
+
+volumes:
+  pgdata:
+  worm_raw:
+  derived_evidence:
+  court_bundles:
+
+networks:
+  internal_lan:
+    driver: bridge
